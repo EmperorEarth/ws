@@ -62,11 +62,23 @@ var Login = {
 
 
 var Chat = {
+	lastScroll: 0,
 	oninit: function() {
 		Messages.init()
 	},
+	onupdate: function() {
+		var scroll = $(".messages").get(0).scrollHeight
+		if (Chat.lastScroll == scroll) {
+			return
+		}
+		Chat.lastScroll = scroll
+
+		$("body").animate({
+			scrollTop: scroll
+		}, 1000);
+	},
 	view: function() {
-		return m(".messages", [
+		return m("div.messages", [
 			Messages.list.map(function(msg) {
 				msg = Object.assign({
 					time:   Date.now(),
@@ -76,7 +88,8 @@ var Chat = {
 				var d = new Date(msg.time)
 				return m("p.message", [
 					m("span.message-time",   d.toLocaleTimeString()),
-					m("span.message-author", msg.author + ">"),
+					m("span.message-author", msg.author),
+					m("span.message-invite", ">"),
 					m("span.message-text",   msg.text)
 				])
 			})
@@ -86,14 +99,32 @@ var Chat = {
 
 var App = {
 	view: function(vnode) {
-		return m("app", [
-			m("nav", [
-				m("a.nav-item", {href: "/chat", oncreate: m.route.link}, "chat"),
-				m("a.nav-item", {href: "/about", oncreate: m.route.link}, "about"),
-				m("a.nav-item", {href: "/login", oncreate: m.route.link}, "login")
+		var nav = function(route, caption) {
+			var p = {
+				role: "presentation",
+			}
+			if (m.route.get() == route) {
+				p.className = "disabled"
+			}
+			return m("li", p, [ 
+				m("a", { href: route, oncreate: m.route.link }, caption) 
+			])
+		}
+		return [
+			m("header.header", [
+				m("div.container", [
+					m("ul.nav.nav-pills", [
+						m("li.nav-header", {role: "presentation"}, "The Gophers Chat"),
+						nav("/chat", "chat"),
+						nav("/about", "about"),
+						nav("/login", "login")
+					])
+				])
 			]),
-			m("section", vnode.children)
-		])
+			m("div.container.content", [
+				m("section", vnode.children)
+			])
+		]
 	}
 };
 
@@ -108,29 +139,38 @@ var Message = {
 
 var Compose = {
 	view: function() {
-		return m("form.compose",
-			{onsubmit: function(e) {
-				e.preventDefault()
-				var text = Message.reset()
-				if (text.length == 0) {
-					return
-				}
-				Messages.send({
-					author: Bootstrap.user.name,
-					text:   text,
-					time:   Date.now()
-				})
-			}},
-		   	[
-				m("input", {
-					value: Message.text,
-					oninput: m.withAttr("value", function(value) { 
-						Message.text = value
-					})
-				}),
-				m("button.button[type=submit]", "send"),
-			]
-		)
+		return m("footer.footer", [
+			m("div.container", [
+				m("form.form-horizontal.compose",
+					{onsubmit: function(e) {
+						e.preventDefault()
+						var text = Message.reset()
+						if (text.length == 0) {
+							return
+						}
+						Messages.send({
+							author: Bootstrap.user.name,
+							text:   text,
+							time:   Date.now()
+						})
+					}},
+				   	[
+						m("div.form-group", [
+							m("div.col-xs-12", [
+								m("input.form-control.compose-input", {
+									type: "text",
+									value: Message.text,
+									placeholder: "Write a message...",
+									oninput: m.withAttr("value", function(value) { 
+										Message.text = value
+									})
+								})
+							])
+						]),
+					]
+				)
+			])
+		])
 	}
 }
 
@@ -153,10 +193,23 @@ var Bootstrap = {
 				m.redraw()
 			})
 	},
+	onremove: function() {
+		Bootstrap.spinner.stop()
+	},
 	oncreate: function() {
 		if (Bootstrap.ready) {
 			return
 		}
+		var opts = {
+			lines:   17,
+			length:  12,
+			width:   2,
+			radius:  12,
+			color:   '#268bd2',
+			opacity: 0.1,
+			speed:   1.5,
+		}
+		Bootstrap.spinner = new Spinner(opts).spin(document.body)
 		return Bootstrap.login()
 	},
 	view: function(vnode) {
@@ -167,6 +220,7 @@ var Bootstrap = {
 		return m("div", "loading...")
 	}
 }
+
 
 m.route(document.body, "/", {
 	"/": {
@@ -185,7 +239,7 @@ m.route(document.body, "/", {
 				m.route.set("/")
 				return
 			}
-			return m(App, m(Chat), m(Compose))
+			return [ m(App, m(Chat)), m(Compose) ]
 		}	
 	},
     "/about": {
