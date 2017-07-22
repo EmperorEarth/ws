@@ -1,65 +1,16 @@
+var Connection = new Client("ws://localhost/8080/ws");
+
 var Messages = {
 	list: [],
-	init: function() {
-		// TODO
-		if (Messages.list.length == 0) {
-		Messages.list.push({
-			time:   Date.now(),
-			author: Bootstrap.user.name,
-			text:   "hello, everybody!",
-		})
-		}
-	},
+	init: function() {},
 	send: function(msg) {
 		Messages.list.push(msg)
 	}
 };
 
-function login(name) {
-	return new Promise(function(resolve, reject) {
-		setTimeout(function() {
-			resolve({
-				name: name,
-			})
-		}, 1000)
-	})
-}
-
-function send(msg) {
-	return new Promise(function(resolve, reject) {
-		setTimeout(function() {
-			resolve()
-		}, 1000)
-	})
-}
-
 var User = {
 	name: "gopher"
 }
-
-var Login = {
-	view: function() {
-		return m("form.login",
-			{onsubmit: function(e) {
-				e.preventDefault()
-				if (User.name.length == 0) {
-					return
-				}
-				Bootstrap.login()
-			}},
-		   	[
-				m("input.login-name", {
-					value: User.name,
-					oninput: m.withAttr("value", function(value) { 
-						User.name = value
-					})
-				}),
-				m("button.button[type=submit]", "relogin"),
-			]
-		)
-	}
-}
-
 
 var Chat = {
 	lastScroll: 0,
@@ -113,11 +64,50 @@ var App = {
 		return [
 			m("header.header", [
 				m("div.container", [
-					m("ul.nav.nav-pills", [
-						m("li.nav-header", {role: "presentation"}, "The Gophers Chat"),
-						nav("/chat", "chat"),
-						nav("/about", "about"),
-						nav("/login", "login")
+					m(".row", [
+						m(".col-xs-7", [
+							m("ul.nav.nav-pills", [
+								m("li.nav-header", {role: "presentation"}, [
+									m("a#chat", { href: "/chat", oncreate: m.route.link }, "GoChat"),
+								]),
+								nav("/about", "about"),
+							]),
+						]),
+						m(".col-xs-5.text-right", [
+							m("form.user", {
+								onsubmit: function(e) {
+									e.preventDefault()
+									if (User.name.length != 0) {
+										Bootstrap.login()
+									}
+								}	
+							}, [
+								m("span.glyphicon.glyphicon-user"),
+								m("span.user-prefix", "@"),
+								m("input.user-name", {
+									value: User.name,
+									oncreate: function(vnode) {
+										$(vnode.dom).css('width', textWidth(vnode.dom.value));
+									},
+									onfocus: function(e) {
+										var prev = this.value
+										setTimeout(function() {
+											e.target.value = prev
+										}, 1)
+									},
+									oninput: function(e) {
+										var el = e.target
+										User.name = el.value
+										$(el).css('width', textWidth(el.value));
+									},
+									onchange: function(e) { 
+										if (User.name.length != 0) {
+											Bootstrap.login()
+										}
+									}
+								}),
+							])
+						])
 					])
 				])
 			]),
@@ -127,6 +117,29 @@ var App = {
 		]
 	}
 };
+
+function textWidth(text) {
+	var ret = 0;
+	var temp = document.getElementById("temp");
+	m.render(temp, m("div", {
+		oncreate: function(vnode) {
+			ret = vnode.dom.clientWidth;
+		},
+		onupdate: function(vnode) {
+			ret = vnode.dom.clientWidth;
+		},
+		style: {
+			"font-weight": "500",
+			"font-size":   "14px",
+			"position":    "absolute",
+			"visibility":  "hidden",
+			"height":      "auto",
+			"width":       "auto",
+			"white-space": "nowrap"
+		},
+	}, text))
+	return ret + 5 + "px"
+}
 
 var Message = {
 	text: "",
@@ -138,6 +151,11 @@ var Message = {
 }
 
 var Compose = {
+	oncreate: function() {
+		setTimeout(function() {
+			document.getElementById("compose").focus()
+		}, 10)
+	},
 	view: function() {
 		return m("footer.footer", [
 			m("div.container", [
@@ -157,10 +175,11 @@ var Compose = {
 				   	[
 						m("div.form-group", [
 							m("div.col-xs-12", [
-								m("input.form-control.compose-input", {
+								m("input.form-control.compose-input#compose", {
 									type: "text",
 									value: Message.text,
 									placeholder: "Write a message...",
+									autocomplete: "off",
 									oninput: m.withAttr("value", function(value) { 
 										Message.text = value
 									})
@@ -182,24 +201,34 @@ var About = {
 
 var Bootstrap = {
 	ready: false,
-	user:  {},
 	login: function() {
-		Bootstrap.ready = false
+		var self = this;
+		this.ready = false
+
 		m.route.set("/")
-		return login(User)
-			.then(function(ws) {
-				Bootstrap.ready = true
-				Bootstrap.user  = Object.assign({}, User)
-				m.redraw()
+
+		return Connection.call("hello", Object.assign({}, User))
+			.then(function(user) {
+				Object.assign(User, user)
+				self.ready = true;
 			})
-	},
-	onremove: function() {
-		Bootstrap.spinner.stop()
+			.catch(function(err) {
+				console.warn("call hello error:", err);
+				self.err = err;
+			})
+			.then(function() {
+				Bootstrap.spinner.stop()
+				m.redraw();
+			});
 	},
 	oncreate: function() {
-		if (Bootstrap.ready) {
+		if (this.ready) {
 			return
 		}
+		if (this.err != null) {
+			return;
+		}
+
 		var opts = {
 			lines:   17,
 			length:  12,
@@ -210,12 +239,18 @@ var Bootstrap = {
 			speed:   1.5,
 		}
 		Bootstrap.spinner = new Spinner(opts).spin(document.body)
+
 		return Bootstrap.login()
 	},
 	view: function(vnode) {
-		if (vnode.state.ready) {
+		if (this.ready) {
 			m.route.set("/chat")
 			return
+		}
+		if (this.err != null) {
+			return m(".crash", [
+				m(".crash-message", "Oh snap! Something went wrong! =(")
+			])
 		}
 		return m("div", "loading...")
 	}
