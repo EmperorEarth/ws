@@ -1,10 +1,11 @@
 class Client {
 	constructor(endpoint) {
 		this.endpoint = endpoint;
-		this.seq = 0;
+		this.seq = 1;
 		this.ready = false;
 		this.ws = null;
 		this.pending = {};
+		this.handler = {};
 	}
 
 	connect() {
@@ -23,9 +24,9 @@ class Client {
 				}
 
 				console.warn("websocket lifetime error:" + err)
-				Object.keys(this.pending).forEach(function(k) {
-					this.pending[k].reject(err);
-					delete this.pending[k];
+				Object.keys(self.pending).forEach(function(k) {
+					self.pending[k].reject(err);
+					delete self.pending[k];
 				})
 			};
 			ws.onopen = function() {
@@ -35,29 +36,36 @@ class Client {
 				}
 			};
 			ws.onmessage = function(s) {
-				console.log(s);
-
-				var msg, dfd;
+				var msg, request, handler;
 				try {
-					msg = JSON.parse(s);
+					msg = JSON.parse(s.data);
 				} catch (err) {
 					console.warn("parse incoming message error:", err);
 					return
 				}
-				dfd = this.pending[msg.id];
-				if (dfd == null) {
-					console.warn("unknown message id:", msg.id);
+
+				// Notice
+				if (msg.id == void 0 || msg.id == 0) {
+					if (handler = self.handler[msg.method]) {
+						handler.forEach((h) => h(msg.params, self));
+						return
+					}
+					console.warn("no handler for method:", msg.method);
 					return
 				}
 
-				delete this.pending[msg.id];
-
-				if (msg.error != null) {
-					dfd.reject(msg.error);
-					return;
+				request = self.pending[msg.id];
+				if (request == null) {
+					console.warn("no pending request for:", msg.method, msg.id);
+					return
 				}
 
-				dfd.resolve(msg.result);
+				delete self.pending[msg.id];
+				if (msg.error != null) {
+					request.reject(msg.error);
+				} else {
+					request.resolve(msg.result);
+				}
 
 				return;
 			};
@@ -65,11 +73,12 @@ class Client {
 	}
 
 	call(method, params) {
+		var self = this;
 		return this.connect()
 			.then(function(conn) {
-				var seq = this.seq++;
+				var seq = self.seq++;
 				var dfd = defer();
-				this.pending[seq] = dfd;
+				self.pending[seq] = dfd;
 				conn.send(JSON.stringify({
 					id:     seq,
 					method: method,
@@ -77,6 +86,15 @@ class Client {
 				}))
 				return dfd.promise;
 			})
+	}
+
+	handle(method, callback) {
+		var list = this.handler[method];
+		if (list == null) {
+			this.handler[method] = [callback];
+			return
+		}
+		list.push(callback);
 	}
 }
 

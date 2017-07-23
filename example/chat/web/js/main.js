@@ -1,10 +1,20 @@
-var Connection = new Client("ws://localhost/8080/ws");
+var Connection = new Client("ws://localhost:8080/ws");
 
 var Messages = {
 	list: [],
-	init: function() {},
+	init: function() {
+		Connection.handle("publish", function(raw) {
+			var msg = Object.assign({}, raw, {
+				time: new Date(parseInt(raw.time, 10))
+			})
+			Messages.list.push(msg)
+			m.redraw()
+		})
+	},
 	send: function(msg) {
-		Messages.list.push(msg)
+		Connection.call("publish", Object.assign({}, msg, {
+			time: "" + msg.time
+		}))
 	}
 };
 
@@ -167,7 +177,7 @@ var Compose = {
 							return
 						}
 						Messages.send({
-							author: Bootstrap.user.name,
+							author: User.name,
 							text:   text,
 							time:   Date.now()
 						})
