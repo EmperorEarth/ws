@@ -5,9 +5,31 @@ var Messages = {
 	init: function() {
 		Connection.handle("publish", function(raw) {
 			var msg = Object.assign({}, raw, {
+				kind: "publish",
 				time: new Date(parseInt(raw.time, 10))
 			})
 			Messages.list.push(msg)
+			m.redraw()
+		})
+		Connection.handle("rename", function(raw) {
+			Messages.list.push(Object.assign({
+				kind:"rename",
+				time: new Date()
+			}, raw))
+			m.redraw()
+		})
+		Connection.handle("greet", function(raw) {
+			Messages.list.push(Object.assign({
+				kind:"greet",
+				time: new Date()
+			}, raw))
+			m.redraw()
+		})
+		Connection.handle("goodbye", function(raw) {
+			Messages.list.push(Object.assign({
+				kind:"goodbye",
+				time: new Date()
+			}, raw))
 			m.redraw()
 		})
 	},
@@ -19,7 +41,7 @@ var Messages = {
 };
 
 var User = {
-	name: "gopher"
+	name: ""
 }
 
 var Chat = {
@@ -41,18 +63,36 @@ var Chat = {
 	view: function() {
 		return m("div.messages", [
 			Messages.list.map(function(msg) {
-				msg = Object.assign({
-					time:   Date.now(),
-					author: "@_@",
-				}, msg)
+				var d = new Date(msg.time);
+				switch (msg.kind) {
+					case "rename":
+						return m("p.message", [
+							m("span.message-time",   d.toLocaleTimeString()),
+							m("span.message-prev",   msg.prev),
+							m("span.message-invite", "~>"),
+							m("span.message-last",   msg.name)
+						])
+					case "publish":
+						return m("p.message", [
+							m("span.message-time",   d.toLocaleTimeString()),
+							m("span.message-author", msg.author),
+							m("span.message-invite", ">"),
+							m("span.message-text",   msg.text)
+						])
+					case "greet":
+						return m("p.message", [
+							m("span.message-time",   d.toLocaleTimeString()),
+							m("span.message-author", msg.name),
+							m("span.message-info",   "is here!")
+						])
+					case "goodbye":
+						return m("p.message", [
+							m("span.message-time",   d.toLocaleTimeString()),
+							m("span.message-author", msg.name),
+							m("span.message-info",   "gone =(")
+						])
+				}
 
-				var d = new Date(msg.time)
-				return m("p.message", [
-					m("span.message-time",   d.toLocaleTimeString()),
-					m("span.message-author", msg.author),
-					m("span.message-invite", ">"),
-					m("span.message-text",   msg.text)
-				])
 			})
 		])
 	}
@@ -88,7 +128,7 @@ var App = {
 								onsubmit: function(e) {
 									e.preventDefault()
 									if (User.name.length != 0) {
-										Bootstrap.login()
+										Bootstrap.rename()
 									}
 								}	
 							}, [
@@ -112,7 +152,7 @@ var App = {
 									},
 									onchange: function(e) { 
 										if (User.name.length != 0) {
-											Bootstrap.login()
+											Bootstrap.rename()
 										}
 									}
 								}),
@@ -211,24 +251,35 @@ var About = {
 
 var Bootstrap = {
 	ready: false,
-	login: function() {
+	oninit: function() {
+		Connection.handle("hello", function(raw) {
+			User.name = raw.name
+
+			Bootstrap.ready = true
+			Bootstrap.spinner.stop()
+			m.redraw();
+		})
+	},
+	connect: function() {
 		var self = this;
 		this.ready = false
 
 		m.route.set("/")
 
-		return Connection.call("hello", Object.assign({}, User))
-			.then(function(user) {
-				Object.assign(User, user)
-				self.ready = true;
-			})
+		return Connection.connect()
 			.catch(function(err) {
-				console.warn("call hello error:", err);
+				console.warn("connect error:", err);
 				self.err = err;
 			})
+	},
+	rename: function() {
+		return Connection
+			.call("rename", { name: User.name })
 			.then(function() {
-				Bootstrap.spinner.stop()
-				m.redraw();
+				console.log("rename ok" )
+			})
+			.catch(function(err) {
+				console.warn("rename error:", err);
 			});
 	},
 	oncreate: function() {
@@ -250,7 +301,7 @@ var Bootstrap = {
 		}
 		Bootstrap.spinner = new Spinner(opts).spin(document.body)
 
-		return Bootstrap.login()
+		return Bootstrap.connect()
 	},
 	view: function(vnode) {
 		if (this.ready) {
@@ -272,11 +323,6 @@ m.route(document.body, "/", {
 		render: function() {
 			return m(Bootstrap)
 		},
-	},
-	"/login": {
-		render: function() {
-			return m(App, m(Login))
-		}	
 	},
 	"/chat": {
 		render: function() {

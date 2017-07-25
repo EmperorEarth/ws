@@ -1,23 +1,24 @@
 package main
 
 import (
-	"encoding/json"
 	"flag"
-	"io"
 	"log"
 	"net"
-	"sync"
 	"time"
 
 	"github.com/gobwas/ws"
-	"github.com/gobwas/ws/wsutil"
 	"github.com/mailru/easygo/netpoll"
+
+	"net/http"
+	_ "net/http/pprof"
 )
 
 var (
-	addr    = flag.String("listen", "localhost:8080", "address to bind to")
-	workers = flag.Int("workers", 128, "max workers count")
-	queue   = flag.Int("queue", 1, "workers task queue size")
+	addr      = flag.String("listen", "localhost:8080", "address to bind to")
+	debug     = flag.String("pprof", "localhost:3333", "address for pprof http")
+	workers   = flag.Int("workers", 128, "max workers count")
+	queue     = flag.Int("queue", 1, "workers task queue size")
+	ioTimeout = flag.Duration("io_timeout", time.Millisecond*100, "i/o operations timeout")
 )
 
 func main() {
@@ -37,129 +38,62 @@ func main() {
 
 	log.Printf("listening on %s", ln.Addr().String())
 
-	// Create new pool with N workers.
-	pool := NewPool(1, *workers, *queue)
+	if x := *debug; x != "" {
+		go func() {
+			log.Printf("starting pprof server on %s", x)
+			log.Printf("pprof server error: %v", http.ListenAndServe(x, nil))
+		}()
+	}
 
-	var clients []net.Conn
-	var mu sync.RWMutex
-	notice := make(chan Request, 1)
-	go func() {
-		for req := range notice {
-			mu.RLock()
-			cs := clients
-			mu.RUnlock()
-
-			req := req
-			for _, conn := range cs {
-				conn := conn
-				err := pool.ScheduleTimeout(time.Millisecond, func() {
-					//register
-					dest := wsutil.NewWriter(conn, ws.StateServerSide, ws.OpText)
-					encoder := json.NewEncoder(dest)
-					err = encoder.Encode(req)
-					if err == nil {
-						err = dest.Flush()
-					}
-					if err != nil {
-						log.Printf("%s: send notice error: %v", nameConn(conn), err)
-					}
-				})
-				if err != nil {
-					log.Printf("%s: schedule notice error: %v; miss", nameConn(conn), err)
-				}
-			}
-		}
-	}()
+	// Create new pool with N workers and 1 running worker.
+	var (
+		exit = make(chan struct{})
+		pool = NewPool(1, *workers, *queue)
+		chat = NewChat(pool)
+	)
 
 	handle := func(conn net.Conn) {
-		name := nameConn(conn)
+		safeConn := deadliner{conn, *ioTimeout}
 
 		// Zero-copy upgrade to WebSocket connection.
-		hs, err := ws.Upgrade(conn)
+		hs, err := ws.Upgrade(safeConn)
 		if err != nil {
-			log.Printf("%s: upgrade error: %v", name, err)
+			log.Printf("%s: upgrade error: %v", nameConn(conn), err)
 			conn.Close()
 			return
 		}
 
-		log.Printf("%s: established websocket connection: %+v", name, hs)
-		mu.Lock()
-		clients = append(clients, conn)
-		mu.Unlock()
+		log.Printf("%s: established websocket connection: %+v", nameConn(conn), hs)
+
+		user := chat.Register(safeConn)
 
 		// Create read events descriptor for conn.
 		desc := netpoll.Must(netpoll.HandleRead(conn))
 
 		// Start receiving events from conn.
 		poller.Start(desc, func(ev netpoll.Event) {
-			log.Printf("%s: netpoll event: %s", name, ev)
-
-			if ev&netpoll.EventReadHup != 0 {
-				log.Printf("%s: peer has closed its read end, closing connection", name)
+			if ev&(netpoll.EventReadHup|netpoll.EventHup) != 0 {
 				poller.Stop(desc)
-				conn.Close()
-				desc.Close()
+				chat.Remove(user)
 				return
 			}
-
 			pool.Schedule(func() {
-				header, err := ws.ReadHeader(conn)
-				if err != nil {
-					log.Printf("%s: read frame header error: %v", name, err)
-					return
-				}
-				src := wsutil.NewCipherReader(
-					io.LimitReader(conn, header.Length),
-					header.Mask,
-				)
-				//bts, err := ioutil.ReadAll(src)
-				//if err != nil {
-				//	log.Printf("%s: read all error: %v", name, err)
-				//	return
-				//}
-				//log.Printf("%s: %#q", name, bts)
-				//decoder := json.NewDecoder(bytes.NewReader(bts))
-				decoder := json.NewDecoder(src)
-				var r Request
-				if err := decoder.Decode(&r); err != nil {
-					log.Printf("%s: unmarshal request error: %v", name, err)
+				if err := user.Receive(); err != nil {
 					poller.Stop(desc)
-					conn.Close()
-					desc.Close()
-					return
+					chat.Remove(user)
 				}
-				log.Printf("%s: request: %+v", name, r)
-
-				switch r.Method {
-				case "hello":
-					dest := wsutil.NewWriter(conn, ws.StateServerSide, ws.OpText)
-					encoder := json.NewEncoder(dest)
-					err = encoder.Encode(Response{
-						ID: r.ID,
-						Result: map[string]string{
-							"name": "ws",
-						},
-					})
-					if err == nil {
-						err = dest.Flush()
-					}
-					if err != nil {
-						log.Printf("%s: send response error: %v", name, err)
-						return
-					}
-
-				case "publish":
-					r.ID = 0
-					notice <- r
-				}
-
-				//register
 			})
 		})
 	}
 
-	accept := make(chan error, 1)
-	for {
+	// Create accept events descriptor for listener.
+	acceptDesc := netpoll.Must(netpoll.HandleListener(
+		ln, netpoll.EventRead|netpoll.EventOneShot,
+	))
+	var (
+		accept = make(chan error, 1)
+	)
+	poller.Start(acceptDesc, func(e netpoll.Event) {
 		err := pool.ScheduleTimeout(time.Millisecond, func() {
 			conn, err := ln.Accept()
 			if err != nil {
@@ -174,7 +108,7 @@ func main() {
 			err = <-accept
 		}
 		if err != nil {
-			if err == ErrScheduleTimeout {
+			if err != ErrScheduleTimeout {
 				goto cooldown
 			}
 			if ne, ok := err.(net.Error); ok && ne.Temporary() {
@@ -188,7 +122,11 @@ func main() {
 			log.Printf("accept error: %v; retrying in %s", err, delay)
 			time.Sleep(delay)
 		}
-	}
+
+		poller.Resume(acceptDesc)
+	})
+
+	<-exit
 }
 
 func nameConn(conn net.Conn) string {

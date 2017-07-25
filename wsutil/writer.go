@@ -196,6 +196,21 @@ func NewWriterBuffer(dest io.Writer, state ws.State, op ws.OpCode, buf []byte) *
 	}
 }
 
+// TODO(gobwas): create NewFrameWriter()
+// NewWriterThrough returns a new Writer with zero-sized buffer every Write()
+// call of which leads to w.WriteThrough() call.
+//
+// This could be useful for some rare and not efficient cases, when only
+// io.Writer is expected somewhere. That is, it will always result additional
+// write() syscall for writing frame header when dest is not buffered.
+//func NewWriterThrough(dest io.Writer, state ws.State, op ws.OpCode) *Writer {
+//	return &Writer{
+//		dest:  dest,
+//		state: state,
+//		op:    op,
+//	}
+//}
+
 // Constants which are represent frame length ranges.
 const (
 	len7  = int(125) // 126 and 127 are reserved values
